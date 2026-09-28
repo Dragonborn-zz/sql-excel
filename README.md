@@ -43,5 +43,4 @@ python -m pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/sim
 ##软件截图
 
 <img width="2559" height="1334" alt="image" src="https://github.com/user-attachments/assets/f5d65a01-5225-4610-8694-12c3885571ef" />
-<img width="2559" height="1334" alt="image" src="https://github.com/user-attachments/assets/2d1fa47c-7e6b-43cb-a312-aed941d3cd94" />
 
