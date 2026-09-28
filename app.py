@@ -5,15 +5,25 @@ from __future__ import annotations
 import math
 import re
 import sqlite3
+import sys
 import threading
 from datetime import date, datetime, time
 from pathlib import Path
 
 import pandas as pd
 
-ROOT = Path(__file__).resolve().parent
-STATIC_DIR = ROOT / "static"
-DATA_DIR = ROOT / "data"
+
+def _runtime_paths() -> tuple[Path, Path, Path]:
+    """源码运行时资源和数据都在项目目录。打包后页面在解压目录，数据库放在 exe 旁边。"""
+    if getattr(sys, "frozen", False):
+        root = Path(sys.executable).resolve().parent
+        static = Path(getattr(sys, "_MEIPASS", root)) / "static"
+        return root, static, root / "data"
+    root = Path(__file__).resolve().parent
+    return root, root / "static", root / "data"
+
+
+ROOT, STATIC_DIR, DATA_DIR = _runtime_paths()
 DB_PATH = DATA_DIR / "workspace.sqlite"
 
 MAX_RESULT_ROWS = 2000
