@@ -1,0 +1,26 @@
+# 虚拟环境与字节码
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# 本地数据库、WebView 缓存（含用户导入的表）
+data/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# PyInstaller 打包产物
+build/
+dist/
+*.spec
+
+# 编辑器与系统文件
+.idea/
+.vscode/
+*.log
+Thumbs.db
+Desktop.ini

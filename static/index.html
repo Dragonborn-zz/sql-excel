@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SQL 查 Excel</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="mark" aria-hidden="true"></span>
+      <div>
+        <h1>SQL 查 Excel</h1>
+        <p>工作表导入 SQLite，直接写 SQL 查询</p>
+      </div>
+    </div>
+    <button id="reset-btn" class="ghost" type="button">清空数据</button>
+  </header>
+
+  <div class="workspace">
+    <aside class="side">
+      <div class="drop" id="drop-zone" role="button" tabindex="0">
+        <strong>拖入 Excel，或点击选择</strong>
+        <span>支持 .xlsx、.xlsm、.xls。每个工作表变成一张表，第一行当作列名。</span>
+      </div>
+      <p class="hint">单击表名或列名，会插入到当前页签的光标处。单击表名以外的空白处，会打开查询页签。</p>
+      <div id="status" class="status" role="status"></div>
+      <div id="table-list" class="table-list"></div>
+    </aside>
+
+    <main class="main">
+      <div id="tab-bar" class="tab-bar" role="tablist">
+        <button id="main-tab" class="tab active" type="button" role="tab" data-tab="main">查询</button>
+      </div>
+      <div id="panels" class="panels">
+      <div id="main-panel" class="work-panel">
+      <section class="editor">
+        <div class="editor-bar">
+          <label for="sql">SQL</label>
+          <div class="actions">
+            <span id="query-meta" class="meta"></span>
+            <button id="export-btn" class="ghost" type="button" disabled>导出 CSV</button>
+            <button id="export-excel-btn" class="ghost" type="button" disabled>导出 Excel</button>
+            <button id="run-btn" class="primary" type="button">运行</button>
+          </div>
+        </div>
+        <textarea id="sql" spellcheck="false" placeholder="SELECT * FROM &quot;文件名__工作表&quot; LIMIT 100"></textarea>
+        <p class="hint slim">Ctrl + Enter 运行。单击左侧表名或列名，会插入到光标处。</p>
+      </section>
+      <section class="results">
+        <div id="message" class="message" hidden></div>
+        <div id="result-wrap" class="result-wrap">
+          <div id="empty" class="empty">导入 Excel 后，在这里查看查询结果。</div>
+        </div>
+      </section>
+      </div>
+      </div>
+    </main>
+  </div>
+
+  <div id="overlay" class="overlay" hidden>
+    <div>松开即可导入</div>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>
