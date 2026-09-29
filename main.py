@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import sqlite3
 from pathlib import Path
 
 import webview
@@ -11,9 +12,17 @@ from webview.dom import DOMEventHandler
 
 import app
 
-EXCEL_TYPES = ("Excel (*.xlsx;*.xlsm;*.xls)",)
+OPEN_TYPES = (
+    "数据文件 (*.xlsx;*.xlsm;*.xls;*.csv;*.json;*.db;*.sqlite;*.sqlite3)",
+    "Excel (*.xlsx;*.xlsm;*.xls)",
+    "CSV (*.csv)",
+    "JSON (*.json)",
+    "SQLite (*.db;*.sqlite;*.sqlite3)",
+)
 CSV_TYPES = ("CSV (*.csv)",)
 XLSX_TYPES = ("Excel (*.xlsx)",)
+JSON_TYPES = ("JSON (*.json)",)
+DB_TYPES = ("SQLite (*.db)",)
 
 
 class Api:
@@ -33,7 +42,7 @@ class Api:
         selected = webview.windows[0].create_file_dialog(
             webview.FileDialog.OPEN,
             allow_multiple=True,
-            file_types=EXCEL_TYPES,
+            file_types=OPEN_TYPES,
         )
         if not selected:
             return None
@@ -74,6 +83,85 @@ class Api:
         except Exception as exc:
             return {"error": f"无法保存：{exc}"}
         return str(path)
+
+    def save_json(self, columns, rows):
+        if not columns:
+            return {"error": "没有可以导出的结果"}
+        selected = webview.windows[0].create_file_dialog(
+            webview.FileDialog.SAVE,
+            save_filename="query.json",
+            file_types=JSON_TYPES,
+        )
+        if not selected:
+            return None
+        path = Path(selected if isinstance(selected, str) else selected[0])
+        if path.suffix.lower() != ".json":
+            path = path.with_suffix(".json")
+        try:
+            text = json.dumps(result_records(columns, rows or []), ensure_ascii=False, indent=2)
+            path.write_text(text, encoding="utf-8")
+        except Exception as exc:
+            return {"error": f"无法保存：{exc}"}
+        return str(path)
+
+    def save_db(self, columns, rows):
+        if not columns:
+            return {"error": "没有可以导出的结果"}
+        selected = webview.windows[0].create_file_dialog(
+            webview.FileDialog.SAVE,
+            save_filename="query.db",
+            file_types=DB_TYPES,
+        )
+        if not selected:
+            return None
+        path = Path(selected if isinstance(selected, str) else selected[0])
+        if path.suffix.lower() not in app.SQLITE_EXTS:
+            path = path.with_suffix(".db")
+        if app._same_file(path, app.DB_PATH):
+            return {"error": "不能覆盖当前正在使用的数据库"}
+        try:
+            write_sqlite(path, columns, rows or [])
+        except Exception as exc:
+            return {"error": f"无法保存：{exc}"}
+        return str(path)
+
+
+def result_records(columns, rows) -> list[dict]:
+    names = app.dedupe_names([str(column) for column in columns])
+    records: list[dict] = []
+    width = len(names)
+    for row in rows:
+        values = list(row)
+        if len(values) < width:
+            values.extend([None] * (width - len(values)))
+        records.append({name: values[index] for index, name in enumerate(names)})
+    return records
+
+
+def write_sqlite(path: Path, columns, rows) -> None:
+    for extra in (path, Path(str(path) + "-wal"), Path(str(path) + "-shm")):
+        if extra.is_file():
+            extra.unlink()
+    names = app.dedupe_names([str(column) for column in columns])
+    column_sql = ", ".join(app.quote_ident(name) for name in names)
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute(f"CREATE TABLE {app.quote_ident('查询结果')} ({column_sql})")
+        if rows:
+            placeholders = ", ".join(["?"] * len(names))
+            payload = []
+            for row in rows:
+                values = list(row)
+                if len(values) < len(names):
+                    values.extend([None] * (len(names) - len(values)))
+                payload.append(values[: len(names)])
+            conn.executemany(
+                f"INSERT INTO {app.quote_ident('查询结果')} ({column_sql}) VALUES ({placeholders})",
+                payload,
+            )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def write_excel(path: Path, columns, rows) -> None:

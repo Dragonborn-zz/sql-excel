@@ -1,7 +1,8 @@
-"""把 Excel 工作表导入 SQLite，供桌面窗口查询。"""
+"""把 Excel、CSV、JSON 和 SQLite 导入工作区数据库，供桌面窗口查询。"""
 
 from __future__ import annotations
 
+import json
 import math
 import re
 import sqlite3
@@ -27,7 +28,9 @@ ROOT, STATIC_DIR, DATA_DIR = _runtime_paths()
 DB_PATH = DATA_DIR / "workspace.sqlite"
 
 MAX_RESULT_ROWS = 2000
-ALLOWED_EXTS = {".xlsx", ".xlsm", ".xls"}
+EXCEL_EXTS = {".xlsx", ".xlsm", ".xls"}
+SQLITE_EXTS = {".db", ".sqlite", ".sqlite3"}
+ALLOWED_EXTS = EXCEL_EXTS | SQLITE_EXTS | {".csv", ".json"}
 ALLOWED_SQL = {
     "select",
     "with",
@@ -154,10 +157,8 @@ def cell_value(value):
     return str(value)
 
 
-def unique_table_name(file_stem: str, sheet_name: str, taken: set[str]) -> str:
-    stem = re.sub(r"\s+", " ", file_stem).strip() or "文件"
-    sheet = re.sub(r"\s+", " ", sheet_name).strip() or "Sheet"
-    base = f"{stem}__{sheet}".replace('"', "'")
+def claim_name(base: str, taken: set[str]) -> str:
+    base = re.sub(r"\s+", " ", base).strip().replace('"', "'") or "表"
     name = base
     number = 2
     while name.lower() in taken:
@@ -165,6 +166,12 @@ def unique_table_name(file_stem: str, sheet_name: str, taken: set[str]) -> str:
         number += 1
     taken.add(name.lower())
     return name
+
+
+def unique_table_name(file_stem: str, sheet_name: str, taken: set[str]) -> str:
+    stem = re.sub(r"\s+", " ", file_stem).strip() or "文件"
+    sheet = re.sub(r"\s+", " ", sheet_name).strip() or "Sheet"
+    return claim_name(f"{stem}__{sheet}", taken)
 
 
 def engines_for(path: Path) -> list[str]:
@@ -227,6 +234,219 @@ def prepare_sheet(sheet_name: str, frame: pd.DataFrame) -> dict:
     return {"sheet": sheet_name, "skip": None, "columns": columns, "rows": values}
 
 
+def json_cell(value):
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False)
+    return cell_value(value)
+
+
+def _finished_sheet(sheet_name: str, table_base: str, columns: list[str], rows: list[tuple]) -> dict:
+    if not columns:
+        return {"sheet": sheet_name, "table_base": table_base, "skip": "空表", "columns": [], "rows": []}
+    return {
+        "sheet": sheet_name,
+        "table_base": table_base,
+        "skip": None,
+        "columns": columns,
+        "rows": rows,
+    }
+
+
+def read_csv_table(path: Path) -> dict:
+    errors: list[str] = []
+    frame = None
+    for encoding in ("utf-8-sig", "utf-8", "gb18030"):
+        try:
+            frame = pd.read_csv(path, header=None, dtype=object, encoding=encoding)
+            break
+        except UnicodeDecodeError as exc:
+            errors.append(f"{encoding}: {exc}")
+    if frame is None:
+        detail = "；".join(errors) if errors else "未知错误"
+        raise ValueError(f"无法读取 CSV：{detail}")
+    return prepare_sheet("", frame)
+
+
+def _records_to_sheet(records: list, sheet_name: str, table_base: str) -> dict:
+    raw_keys: list[str] = []
+    seen: set[str] = set()
+    for record in records:
+        if not isinstance(record, dict):
+            raise ValueError("JSON 数组里混有不同结构")
+        for key in record:
+            if key not in seen:
+                seen.add(key)
+                raw_keys.append(str(key))
+    columns = normalize_headers(raw_keys)
+    rows = [
+        tuple(json_cell(record.get(key)) for key in raw_keys)
+        for record in records
+    ]
+    return _finished_sheet(sheet_name, table_base, columns, rows)
+
+
+def _matrix_to_sheet(matrix: list, sheet_name: str, table_base: str) -> dict:
+    width = max((len(row) for row in matrix), default=0)
+    padded = [list(row) + [None] * (width - len(row)) for row in matrix]
+    prepared = prepare_sheet(sheet_name, pd.DataFrame(padded))
+    prepared["table_base"] = table_base
+    return prepared
+
+
+def _values_to_sheet(values: list, sheet_name: str, table_base: str) -> dict:
+    return _finished_sheet(sheet_name, table_base, ["值"], [(json_cell(item),) for item in values])
+
+
+def _list_to_sheet(values: list, sheet_name: str, table_base: str) -> dict:
+    if not values:
+        return _finished_sheet(sheet_name, table_base, [], [])
+    first = values[0]
+    if isinstance(first, dict):
+        return _records_to_sheet(values, sheet_name, table_base)
+    if isinstance(first, list):
+        return _matrix_to_sheet(values, sheet_name, table_base)
+    return _values_to_sheet(values, sheet_name, table_base)
+
+
+def _is_columnar(payload: dict) -> bool:
+    if not payload or not all(isinstance(value, list) for value in payload.values()):
+        return False
+    return all(not isinstance(item, (dict, list)) for value in payload.values() for item in value)
+
+
+def _columnar_to_sheet(payload: dict, sheet_name: str, table_base: str) -> dict:
+    keys = [str(key) for key in payload]
+    length = max((len(value) for value in payload.values()), default=0)
+    columns = normalize_headers(keys)
+    rows = []
+    for index in range(length):
+        row = []
+        for key in payload:
+            values = payload[key]
+            row.append(json_cell(values[index]) if index < len(values) else None)
+        rows.append(tuple(row))
+    return _finished_sheet(sheet_name, table_base, columns, rows)
+
+
+def _record_to_sheet(payload: dict, sheet_name: str, table_base: str) -> dict:
+    keys = [str(key) for key in payload]
+    return _finished_sheet(
+        sheet_name,
+        table_base,
+        normalize_headers(keys),
+        [tuple(json_cell(payload[key]) for key in payload)],
+    )
+
+
+def _load_json_text(text: str):
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        rows = []
+        for index, line in enumerate(text.splitlines(), start=1):
+            if not line.strip():
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"无法读取 JSON：第 {index} 行不是合法 JSON") from exc
+        if not rows:
+            raise ValueError("无法读取 JSON")
+        return rows
+
+
+def read_json_tables(path: Path, stem: str) -> list[dict]:
+    try:
+        text = path.read_text(encoding="utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise ValueError("JSON 需要是 UTF-8 文本") from exc
+    return payload_to_tables(_load_json_text(text), stem)
+
+
+def payload_to_tables(payload, stem: str) -> list[dict]:
+    if isinstance(payload, list):
+        return [_list_to_sheet(payload, "", stem)]
+    if isinstance(payload, dict):
+        if _is_columnar(payload):
+            return [_columnar_to_sheet(payload, "", stem)]
+        tables: list[dict] = []
+        for key, value in payload.items():
+            label = str(key)
+            if isinstance(value, list):
+                base = f"{stem}__{label}" if label.strip() else stem
+                tables.append(_list_to_sheet(value, label, base))
+                continue
+        if tables:
+            return tables
+        if payload and all(not isinstance(value, (dict, list)) for value in payload.values()):
+            return [_record_to_sheet(payload, "", stem)]
+    raise ValueError("无法识别 JSON 结构，请使用对象数组，或「表名: 行数组」")
+
+
+def _same_file(path: Path, other: Path) -> bool:
+    try:
+        return path.resolve().samefile(other)
+    except OSError:
+        return path.resolve() == other.resolve()
+
+
+def read_sqlite_tables(path: Path) -> list[dict]:
+    if _same_file(path, DB_PATH):
+        raise ValueError("不能导入当前正在使用的数据库")
+    try:
+        source = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+    except sqlite3.Error as exc:
+        raise ValueError(f"不是有效的 SQLite 数据库：{exc}") from exc
+    source.row_factory = sqlite3.Row
+    prepared: list[dict] = []
+    try:
+        names = source.execute(
+            """
+            SELECT name FROM sqlite_master
+            WHERE type = 'table'
+              AND name NOT LIKE 'sqlite_%'
+              AND name NOT LIKE '\\_meta%' ESCAPE '\\'
+            ORDER BY name
+            """
+        ).fetchall()
+        for item in names:
+            name = item["name"]
+            try:
+                cursor = source.execute(f"SELECT * FROM {quote_ident(name)}")
+                columns = [column[0] for column in cursor.description or []]
+                fetched = cursor.fetchall()
+            except sqlite3.Error as exc:
+                prepared.append(
+                    {"sheet": name, "table_base": name, "skip": str(exc), "columns": [], "rows": []}
+                )
+                continue
+            rows = [tuple(json_safe(cell) for cell in row) for row in fetched]
+            prepared.append(
+                _finished_sheet(name, name, normalize_headers(columns), rows)
+            )
+    finally:
+        source.close()
+    if not prepared:
+        raise ValueError("数据库里没有可导入的表")
+    return prepared
+
+
+def read_file_tables(file_name: str, path: Path) -> list[dict]:
+    suffix = path.suffix.lower()
+    stem = Path(file_name).stem
+    if suffix in EXCEL_EXTS:
+        return read_sheets(path)
+    if suffix == ".csv":
+        table = read_csv_table(path)
+        table["table_base"] = stem
+        return [table]
+    if suffix == ".json":
+        return read_json_tables(path, stem)
+    if suffix in SQLITE_EXTS:
+        return read_sqlite_tables(path)
+    raise ValueError("不支持的格式")
+
+
 def get_conn() -> sqlite3.Connection:
     global _conn
     if _conn is None:
@@ -264,7 +484,7 @@ def import_files(saved: list[tuple[str, Path]]) -> dict:
     failures: list[dict] = []
     for file_name, path in saved:
         try:
-            parsed.append((file_name, read_sheets(path)))
+            parsed.append((file_name, read_file_tables(file_name, path)))
         except Exception as exc:  # noqa: BLE001 - 单个文件失败不影响其他文件
             failures.append({"file": file_name, "sheet": "", "reason": str(exc)})
 
@@ -284,7 +504,11 @@ def import_files(saved: list[tuple[str, Path]]) -> dict:
                             {"file": file_name, "sheet": sheet["sheet"], "reason": sheet["skip"]}
                         )
                         continue
-                    table_name = unique_table_name(stem, sheet["sheet"], taken)
+                    table_base = sheet.get("table_base")
+                    if table_base:
+                        table_name = claim_name(str(table_base), taken)
+                    else:
+                        table_name = unique_table_name(stem, sheet["sheet"], taken)
                     column_sql = ", ".join(quote_ident(column) for column in sheet["columns"])
                     conn.execute(f"CREATE TABLE {quote_ident(table_name)} ({column_sql})")
                     if sheet["rows"]:
@@ -331,7 +555,7 @@ def import_paths(paths: list[str]) -> dict:
             continue
         usable.append((path.name, path))
     if not usable:
-        reason = failures[0]["reason"] if failures else "请选择 Excel 文件"
+        reason = failures[0]["reason"] if failures else "请选择 Excel、CSV、JSON 或 SQLite 文件"
         name = failures[0]["file"] if failures else ""
         raise AppError(f"{reason}：{name}".rstrip("："))
     result = import_files(usable)

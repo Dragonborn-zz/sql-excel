@@ -5,6 +5,9 @@ const sqlEl = document.querySelector("#sql");
 const runBtn = document.querySelector("#run-btn");
 const exportBtn = document.querySelector("#export-btn");
 const exportExcelBtn = document.querySelector("#export-excel-btn");
+const exportJsonBtn = document.querySelector("#export-json-btn");
+const exportDbBtn = document.querySelector("#export-db-btn");
+const mainExportButtons = [exportBtn, exportExcelBtn, exportJsonBtn, exportDbBtn];
 const resetBtn = document.querySelector("#reset-btn");
 const queryMeta = document.querySelector("#query-meta");
 const messageEl = document.querySelector("#message");
@@ -81,7 +84,8 @@ function renderTables(tables) {
       sqlName.className = "sqlname";
       sqlName.textContent = table.name;
       sqlName.title = "单击插入表名";
-      names.append(sheet, sqlName);
+      if (table.sheet && table.sheet !== table.name) names.append(sheet);
+      names.append(sqlName);
       const rows = document.createElement("span");
       rows.className = "rows";
       rows.textContent = `${table.rows} 行`;
@@ -289,11 +293,21 @@ function openTableTab(table) {
   excelBtn.className = "ghost";
   excelBtn.textContent = "导出 Excel";
   excelBtn.disabled = true;
+  const jsonBtn = document.createElement("button");
+  jsonBtn.type = "button";
+  jsonBtn.className = "ghost";
+  jsonBtn.textContent = "导出 JSON";
+  jsonBtn.disabled = true;
+  const dbBtn = document.createElement("button");
+  dbBtn.type = "button";
+  dbBtn.className = "ghost";
+  dbBtn.textContent = "导出 DB";
+  dbBtn.disabled = true;
   const run = document.createElement("button");
   run.type = "button";
   run.className = "primary";
   run.textContent = "运行";
-  actions.append(meta, csvBtn, excelBtn, run);
+  actions.append(meta, csvBtn, excelBtn, jsonBtn, dbBtn, run);
   bar.append(sqlLabel, actions);
   const sqlInput = document.createElement("textarea");
   sqlInput.spellcheck = false;
@@ -314,7 +328,7 @@ function openTableTab(table) {
   panel.append(editor, results);
   panels.append(panel);
 
-  const item = { tab, panel, sqlInput, meta, message, wrap, csvBtn, excelBtn, run, lastResult: null, table };
+  const item = { tab, panel, sqlInput, meta, message, wrap, csvBtn, excelBtn, jsonBtn, dbBtn, run, lastResult: null, table };
   previews.set(id, item);
   run.addEventListener("click", () => runPreview(id));
   sqlInput.addEventListener("keydown", (event) => {
@@ -323,8 +337,11 @@ function openTableTab(table) {
       runPreview(id);
     }
   });
-  csvBtn.addEventListener("click", () => exportCsvFrom(item.lastResult, (text) => showPreviewError(item, text)));
-  excelBtn.addEventListener("click", () => exportExcelFrom(item.lastResult, (text) => showPreviewError(item, text)));
+  const show = (text) => showPreviewError(item, text);
+  csvBtn.addEventListener("click", () => exportCsvFrom(item.lastResult, show));
+  excelBtn.addEventListener("click", () => exportExcelFrom(item.lastResult, show));
+  jsonBtn.addEventListener("click", () => exportJsonFrom(item.lastResult, show));
+  dbBtn.addEventListener("click", () => exportDbFrom(item.lastResult, show));
   activateTab(id);
   sqlInput.focus();
   runPreview(id);
@@ -355,8 +372,9 @@ async function runPreview(id) {
     }
     item.message.hidden = true;
     item.lastResult = data.columns.length ? data : null;
-    item.csvBtn.disabled = !item.lastResult;
-    item.excelBtn.disabled = !item.lastResult;
+    for (const button of [item.csvBtn, item.excelBtn, item.jsonBtn, item.dbBtn]) {
+      button.disabled = !item.lastResult;
+    }
     paintResult(item.wrap, item.meta, data);
     if (data.message) await refreshSchema();
   } catch (error) {
@@ -430,8 +448,7 @@ window.onImported = (data) => {
 
 function renderResult(data) {
   lastResult = data.columns.length ? data : null;
-  exportBtn.disabled = !lastResult;
-  exportExcelBtn.disabled = !lastResult;
+  for (const button of mainExportButtons) button.disabled = !lastResult;
   messageEl.hidden = true;
   paintResult(resultWrap, queryMeta, data);
 }
@@ -496,12 +513,40 @@ async function exportCsvFrom(result, show) {
   }
 }
 
+async function exportJsonFrom(result, show) {
+  if (!result) return;
+  try {
+    const saved = await api().save_json(result.columns, result.rows);
+    if (saved && saved.error) show(saved.error);
+  } catch (error) {
+    show(errorText(error));
+  }
+}
+
+async function exportDbFrom(result, show) {
+  if (!result) return;
+  try {
+    const saved = await api().save_db(result.columns, result.rows);
+    if (saved && saved.error) show(saved.error);
+  } catch (error) {
+    show(errorText(error));
+  }
+}
+
 function exportExcel() {
   return exportExcelFrom(lastResult, showError);
 }
 
 function exportCsv() {
   return exportCsvFrom(lastResult, showError);
+}
+
+function exportJson() {
+  return exportJsonFrom(lastResult, showError);
+}
+
+function exportDb() {
+  return exportDbFrom(lastResult, showError);
 }
 
 dropZone.addEventListener("click", chooseFiles);
@@ -536,6 +581,8 @@ mainTab.addEventListener("click", () => activateTab("main"));
 runBtn.addEventListener("click", runQuery);
 exportBtn.addEventListener("click", exportCsv);
 exportExcelBtn.addEventListener("click", exportExcel);
+exportJsonBtn.addEventListener("click", exportJson);
+exportDbBtn.addEventListener("click", exportDb);
 sqlEl.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
     event.preventDefault();
@@ -558,10 +605,9 @@ resetBtn.addEventListener("click", async () => {
   const empty = document.createElement("div");
   empty.className = "empty";
   empty.id = "empty";
-  empty.textContent = "导入 Excel 后，在这里查看查询结果。";
+  empty.textContent = "导入文件后，在这里查看查询结果。";
   resultWrap.append(empty);
-  exportBtn.disabled = true;
-  exportExcelBtn.disabled = true;
+  for (const button of mainExportButtons) button.disabled = true;
   lastResult = null;
   queryMeta.textContent = "";
 });
