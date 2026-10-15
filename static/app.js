@@ -19,11 +19,73 @@ const mainPanel = document.querySelector("#main-panel");
 const mainTab = document.querySelector("#main-tab");
 
 let lastResult = null;
+let lastSql = null;
 const previews = new Map();
 let savedCursor = { start: 0, end: 0 };
+const historyList = document.querySelector("#history-list");
+const historyBtn = document.querySelector("#history-btn");
+const historyPanel = document.querySelector("#sql-history");
+const clearHistoryBtn = document.querySelector("#clear-history");
+const HISTORY_KEY = "sql-excel-history";
+const HISTORY_LIMIT = 50;
+
 const savedSql = localStorage.getItem("sql-excel-last");
 if (savedSql) sqlEl.value = savedSql;
 savedCursor = { start: sqlEl.value.length, end: sqlEl.value.length };
+
+function loadHistory() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]");
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((item) => typeof item === "string" && item.trim());
+  } catch {
+    return [];
+  }
+}
+
+function rememberSql(sql) {
+  const text = String(sql || "").trim();
+  if (!text) return;
+  const next = [text, ...loadHistory().filter((item) => item !== text)].slice(0, HISTORY_LIMIT);
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(next));
+  renderHistory();
+}
+
+function renderHistory() {
+  const items = loadHistory();
+  clearHistoryBtn.disabled = items.length === 0;
+  historyList.replaceChildren();
+  if (!items.length) {
+    const empty = document.createElement("p");
+    empty.className = "hint history-empty";
+    empty.textContent = "还没有记录。";
+    historyList.append(empty);
+    return;
+  }
+  for (const sql of items) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "history-item";
+    button.textContent = sql;
+    button.title = "填入当前页签";
+    button.addEventListener("click", () => {
+      const input = activeEditor();
+      input.value = sql;
+      if (input === sqlEl) savedCursor = { start: sql.length, end: sql.length };
+      input.focus();
+      input.setSelectionRange(sql.length, sql.length);
+      setHistoryOpen(false);
+    });
+    historyList.append(button);
+  }
+}
+
+function clearHistory() {
+  if (!loadHistory().length) return;
+  if (!window.confirm("清除全部 SQL 记录？")) return;
+  localStorage.removeItem(HISTORY_KEY);
+  renderHistory();
+}
 
 function quoteIdent(name) {
   return `"${String(name).replaceAll('"', '""')}"`;
@@ -148,6 +210,11 @@ function insertAtCursor(text) {
   input.setSelectionRange(cursor, cursor);
 }
 
+function setHistoryOpen(open) {
+  historyPanel.hidden = !open;
+  historyBtn.setAttribute("aria-expanded", open ? "true" : "false");
+}
+
 function activateTab(id) {
   tabBar.querySelectorAll(".tab").forEach((tab) => {
     tab.classList.toggle("active", tab.dataset.tab === id);
@@ -182,7 +249,7 @@ function paintResult(wrap, metaEl, data) {
     return;
   }
 
-  const truncated = data.truncated ? `，仅显示前 ${data.row_count} 行` : "";
+  const truncated = data.truncated ? `，仅显示前 ${data.row_count} 行，导出为全部结果` : "";
   metaEl.textContent = `${data.elapsed_ms} ms · ${data.row_count} 行${truncated}`;
   if (!data.columns.length) {
     const note = document.createElement("div");
@@ -328,7 +395,10 @@ function openTableTab(table) {
   panel.append(editor, results);
   panels.append(panel);
 
-  const item = { tab, panel, sqlInput, meta, message, wrap, csvBtn, excelBtn, jsonBtn, dbBtn, run, lastResult: null, table };
+  const item = {
+    tab, panel, sqlInput, meta, message, wrap, csvBtn, excelBtn, jsonBtn, dbBtn, run,
+    lastResult: null, lastSql: null, table,
+  };
   previews.set(id, item);
   run.addEventListener("click", () => runPreview(id));
   sqlInput.addEventListener("keydown", (event) => {
@@ -338,10 +408,10 @@ function openTableTab(table) {
     }
   });
   const show = (text) => showPreviewError(item, text);
-  csvBtn.addEventListener("click", () => exportCsvFrom(item.lastResult, show));
-  excelBtn.addEventListener("click", () => exportExcelFrom(item.lastResult, show));
-  jsonBtn.addEventListener("click", () => exportJsonFrom(item.lastResult, show));
-  dbBtn.addEventListener("click", () => exportDbFrom(item.lastResult, show));
+  csvBtn.addEventListener("click", () => exportCsvFrom(item.lastSql, show));
+  excelBtn.addEventListener("click", () => exportExcelFrom(item.lastSql, show));
+  jsonBtn.addEventListener("click", () => exportJsonFrom(item.lastSql, show));
+  dbBtn.addEventListener("click", () => exportDbFrom(item.lastSql, show));
   activateTab(id);
   sqlInput.focus();
   runPreview(id);
@@ -366,11 +436,13 @@ async function runPreview(id) {
   try {
     const data = await api().query(sql);
     if (!previews.has(id)) return;
+    rememberSql(sql);
     if (data.error) {
       showPreviewError(item, data.error);
       return;
     }
     item.message.hidden = true;
+    item.lastSql = data.columns.length ? sql : null;
     item.lastResult = data.columns.length ? data : null;
     for (const button of [item.csvBtn, item.excelBtn, item.jsonBtn, item.dbBtn]) {
       button.disabled = !item.lastResult;
@@ -446,7 +518,8 @@ window.onImported = (data) => {
   applyImport(data);
 };
 
-function renderResult(data) {
+function renderResult(data, sql) {
+  lastSql = data.columns.length ? sql : null;
   lastResult = data.columns.length ? data : null;
   for (const button of mainExportButtons) button.disabled = !lastResult;
   messageEl.hidden = true;
@@ -470,11 +543,12 @@ async function runQuery() {
   messageEl.hidden = true;
   try {
     const data = await api().query(sql);
+    rememberSql(sql);
     if (data.error) {
       showError(data.error);
       return;
     }
-    renderResult(data);
+    renderResult(data, sql);
     if (data.message) await refreshSchema();
   } catch (error) {
     showError(errorText(error));
@@ -483,70 +557,46 @@ async function runQuery() {
   }
 }
 
-function csvCell(value) {
-  const text = value === null || value === undefined ? "" : String(value);
-  if (/[",\n\r]/.test(text)) return `"${text.replaceAll('"', '""')}"`;
-  return text;
-}
-
-async function exportExcelFrom(result, show) {
-  if (!result) return;
+async function exportWith(save, sql, show) {
+  if (!sql) return;
   try {
-    const saved = await api().save_excel(result.columns, result.rows);
+    const saved = await save(sql);
     if (saved && saved.error) show(saved.error);
   } catch (error) {
     show(errorText(error));
   }
 }
 
-async function exportCsvFrom(result, show) {
-  if (!result) return;
-  const lines = [
-    result.columns.map(csvCell).join(","),
-    ...result.rows.map((row) => row.map(csvCell).join(",")),
-  ];
-  try {
-    const saved = await api().save_csv(lines.join("\r\n"));
-    if (saved && saved.error) show(saved.error);
-  } catch (error) {
-    show(errorText(error));
-  }
+function exportExcelFrom(sql, show) {
+  return exportWith((text) => api().save_excel(text), sql, show);
 }
 
-async function exportJsonFrom(result, show) {
-  if (!result) return;
-  try {
-    const saved = await api().save_json(result.columns, result.rows);
-    if (saved && saved.error) show(saved.error);
-  } catch (error) {
-    show(errorText(error));
-  }
+function exportCsvFrom(sql, show) {
+  return exportWith((text) => api().save_csv(text), sql, show);
 }
 
-async function exportDbFrom(result, show) {
-  if (!result) return;
-  try {
-    const saved = await api().save_db(result.columns, result.rows);
-    if (saved && saved.error) show(saved.error);
-  } catch (error) {
-    show(errorText(error));
-  }
+function exportJsonFrom(sql, show) {
+  return exportWith((text) => api().save_json(text), sql, show);
+}
+
+function exportDbFrom(sql, show) {
+  return exportWith((text) => api().save_db(text), sql, show);
 }
 
 function exportExcel() {
-  return exportExcelFrom(lastResult, showError);
+  return exportExcelFrom(lastSql, showError);
 }
 
 function exportCsv() {
-  return exportCsvFrom(lastResult, showError);
+  return exportCsvFrom(lastSql, showError);
 }
 
 function exportJson() {
-  return exportJsonFrom(lastResult, showError);
+  return exportJsonFrom(lastSql, showError);
 }
 
 function exportDb() {
-  return exportDbFrom(lastResult, showError);
+  return exportDbFrom(lastSql, showError);
 }
 
 dropZone.addEventListener("click", chooseFiles);
@@ -577,6 +627,19 @@ sqlEl.addEventListener("keyup", rememberCursor);
 sqlEl.addEventListener("click", rememberCursor);
 sqlEl.addEventListener("blur", rememberCursor);
 mainTab.addEventListener("click", () => activateTab("main"));
+
+clearHistoryBtn.addEventListener("click", (event) => {
+  event.stopPropagation();
+  clearHistory();
+});
+historyBtn.addEventListener("click", (event) => {
+  event.stopPropagation();
+  setHistoryOpen(historyPanel.hidden);
+});
+document.addEventListener("click", (event) => {
+  if (!event.target.closest(".history-wrap")) setHistoryOpen(false);
+});
+renderHistory();
 
 runBtn.addEventListener("click", runQuery);
 exportBtn.addEventListener("click", exportCsv);
@@ -609,6 +672,7 @@ resetBtn.addEventListener("click", async () => {
   resultWrap.append(empty);
   for (const button of mainExportButtons) button.disabled = true;
   lastResult = null;
+  lastSql = null;
   queryMeta.textContent = "";
 });
 

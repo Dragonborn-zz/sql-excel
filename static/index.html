@@ -15,7 +15,19 @@
         <p>把表格导入 SQLite，直接写 SQL 查询</p>
       </div>
     </div>
-    <button id="reset-btn" class="ghost" type="button">清空数据</button>
+    <div class="top-actions">
+      <div class="history-wrap">
+        <button id="history-btn" class="ghost" type="button" aria-expanded="false" aria-controls="sql-history">历史 SQL</button>
+        <section id="sql-history" class="history" aria-label="历史 SQL" hidden>
+          <div class="history-bar">
+            <h2>历史 SQL</h2>
+            <button id="clear-history" class="ghost" type="button">清除</button>
+          </div>
+          <div id="history-list" class="history-list"></div>
+        </section>
+      </div>
+      <button id="reset-btn" class="ghost" type="button">清空数据</button>
+    </div>
   </header>
 
   <div class="workspace">

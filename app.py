@@ -8,6 +8,7 @@ import re
 import sqlite3
 import sys
 import threading
+from contextlib import contextmanager
 from datetime import date, datetime, time
 from pathlib import Path
 
@@ -627,7 +628,7 @@ def json_safe(value):
     return value
 
 
-def run_sql(sql: str) -> dict:
+def prepare_sql(sql: str) -> str:
     cleaned = strip_sql_comments(sql).strip().rstrip(";").strip()
     if not cleaned:
         raise AppError("请输入 SQL")
@@ -637,7 +638,11 @@ def run_sql(sql: str) -> dict:
     keyword = match.group(1).lower() if match else ""
     if keyword not in ALLOWED_SQL:
         raise AppError("这条语句不能在当前数据里执行")
+    return cleaned
 
+
+def run_sql(sql: str) -> dict:
+    cleaned = prepare_sql(sql)
     started = datetime.now()
     with _lock:
         conn = get_conn()
@@ -673,6 +678,30 @@ def run_sql(sql: str) -> dict:
         "elapsed_ms": round(elapsed, 1),
         "message": "",
     }
+
+
+@contextmanager
+def query_rows(sql: str):
+    """按 SQL 逐行取出全部结果，不受界面 2000 行限制。"""
+    cleaned = prepare_sql(sql)
+    with _lock:
+        conn = get_conn()
+        try:
+            cursor = conn.execute(cleaned)
+        except sqlite3.Error as exc:
+            if conn.in_transaction:
+                conn.rollback()
+            raise AppError(str(exc)) from exc
+        if cursor.description is None:
+            conn.commit()
+            raise AppError("这条语句没有可导出的结果")
+        columns = [item[0] for item in cursor.description]
+
+        def rows():
+            for row in cursor:
+                yield [json_safe(cell) for cell in row]
+
+        yield columns, rows()
 
 
 def reset():

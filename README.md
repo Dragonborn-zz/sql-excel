@@ -39,7 +39,7 @@ python -m pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/sim
 
 导入后的数据在项目目录的 `data\workspace.sqlite`。这个目录只在本机使用，不会提交到仓库。
 
-查询结果最多显示 2000 行；超过时界面会标明已截断。不支持 `ATTACH`、`DETACH`、`load_extension` 和 `VACUUM INTO`。
+界面最多显示 2000 行；超过时会标明已截断。导出 CSV、Excel、JSON 和 DB 时按这条 SQL 写出全部结果。不支持 `ATTACH`、`DETACH`、`load_extension` 和 `VACUUM INTO`。
 
 ##软件截图
 

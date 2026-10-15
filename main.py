@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import sqlite3
 from pathlib import Path
 
@@ -51,91 +52,106 @@ class Api:
         except app.AppError as exc:
             return {"error": str(exc)}
 
-    def save_csv(self, content: str):
-        selected = webview.windows[0].create_file_dialog(
-            webview.FileDialog.SAVE,
-            save_filename="query.csv",
-            file_types=CSV_TYPES,
-        )
-        if not selected:
-            return None
-        path = Path(selected if isinstance(selected, str) else selected[0])
-        if path.suffix.lower() != ".csv":
-            path = path.with_suffix(".csv")
-        path.write_text(content, encoding="utf-8-sig")
-        return str(path)
+    def save_csv(self, sql: str):
+        return _save_query(sql, "query.csv", CSV_TYPES, ".csv", write_csv)
 
-    def save_excel(self, columns, rows):
-        if not columns:
-            return {"error": "没有可以导出的结果"}
-        selected = webview.windows[0].create_file_dialog(
-            webview.FileDialog.SAVE,
-            save_filename="query.xlsx",
-            file_types=XLSX_TYPES,
-        )
-        if not selected:
-            return None
-        path = Path(selected if isinstance(selected, str) else selected[0])
-        if path.suffix.lower() != ".xlsx":
-            path = path.with_suffix(".xlsx")
-        try:
-            write_excel(path, columns, rows or [])
-        except Exception as exc:
-            return {"error": f"无法保存：{exc}"}
-        return str(path)
+    def save_excel(self, sql: str):
+        return _save_query(sql, "query.xlsx", XLSX_TYPES, ".xlsx", write_excel)
 
-    def save_json(self, columns, rows):
-        if not columns:
-            return {"error": "没有可以导出的结果"}
-        selected = webview.windows[0].create_file_dialog(
-            webview.FileDialog.SAVE,
-            save_filename="query.json",
-            file_types=JSON_TYPES,
-        )
-        if not selected:
-            return None
-        path = Path(selected if isinstance(selected, str) else selected[0])
-        if path.suffix.lower() != ".json":
-            path = path.with_suffix(".json")
-        try:
-            text = json.dumps(result_records(columns, rows or []), ensure_ascii=False, indent=2)
-            path.write_text(text, encoding="utf-8")
-        except Exception as exc:
-            return {"error": f"无法保存：{exc}"}
-        return str(path)
+    def save_json(self, sql: str):
+        return _save_query(sql, "query.json", JSON_TYPES, ".json", write_json)
 
-    def save_db(self, columns, rows):
-        if not columns:
-            return {"error": "没有可以导出的结果"}
-        selected = webview.windows[0].create_file_dialog(
-            webview.FileDialog.SAVE,
-            save_filename="query.db",
-            file_types=DB_TYPES,
-        )
+    def save_db(self, sql: str):
+        selected = _choose_save("query.db", DB_TYPES)
         if not selected:
             return None
-        path = Path(selected if isinstance(selected, str) else selected[0])
-        if path.suffix.lower() not in app.SQLITE_EXTS:
-            path = path.with_suffix(".db")
+        path = _with_suffix(selected, ".db", app.SQLITE_EXTS)
         if app._same_file(path, app.DB_PATH):
             return {"error": "不能覆盖当前正在使用的数据库"}
-        try:
-            write_sqlite(path, columns, rows or [])
-        except Exception as exc:
-            return {"error": f"无法保存：{exc}"}
-        return str(path)
+        return _write_query(sql, path, write_sqlite)
 
 
-def result_records(columns, rows) -> list[dict]:
+def _choose_save(filename: str, file_types):
+    return webview.windows[0].create_file_dialog(
+        webview.FileDialog.SAVE,
+        save_filename=filename,
+        file_types=file_types,
+    )
+
+
+def _with_suffix(selected, suffix: str, allowed: set[str] | None = None) -> Path:
+    path = Path(selected if isinstance(selected, str) else selected[0])
+    if allowed is None:
+        if path.suffix.lower() != suffix:
+            path = path.with_suffix(suffix)
+    elif path.suffix.lower() not in allowed:
+        path = path.with_suffix(suffix)
+    return path
+
+
+def _save_query(sql: str, filename: str, file_types, suffix: str, writer) -> str | dict | None:
+    selected = _choose_save(filename, file_types)
+    if not selected:
+        return None
+    return _write_query(sql, _with_suffix(selected, suffix), writer)
+
+
+def _write_query(sql: str, path: Path, writer) -> str | dict:
+    try:
+        with app.query_rows(sql) as (columns, rows):
+            writer(path, columns, rows)
+    except app.AppError as exc:
+        return {"error": str(exc)}
+    except Exception as exc:
+        return {"error": f"无法保存：{exc}"}
+    return str(path)
+
+
+def _fit_row(row, width: int) -> list:
+    values = list(row)
+    if len(values) < width:
+        values.extend([None] * (width - len(values)))
+    return values[:width]
+
+
+def csv_cell(value) -> str:
+    if value is None:
+        return ""
+    text = str(value)
+    if any(char in text for char in '",\n\r'):
+        return '"' + text.replace('"', '""') + '"'
+    return text
+
+
+def write_csv(path: Path, columns, rows) -> None:
     names = app.dedupe_names([str(column) for column in columns])
-    records: list[dict] = []
+    lines = [",".join(csv_cell(name) for name in names)]
     width = len(names)
-    for row in rows:
-        values = list(row)
-        if len(values) < width:
-            values.extend([None] * (width - len(values)))
-        records.append({name: values[index] for index, name in enumerate(names)})
-    return records
+    with path.open("w", encoding="utf-8-sig", newline="") as handle:
+        handle.write(lines[0])
+        for row in rows:
+            handle.write("\r\n")
+            handle.write(",".join(csv_cell(value) for value in _fit_row(row, width)))
+        handle.write("\r\n")
+
+
+def write_json(path: Path, columns, rows) -> None:
+    names = app.dedupe_names([str(column) for column in columns])
+    width = len(names)
+    with path.open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write("[\n")
+        first = True
+        for row in rows:
+            if not first:
+                handle.write(",\n")
+            first = False
+            values = _fit_row(row, width)
+            json.dump(
+                {name: values[index] for index, name in enumerate(names)},
+                handle,
+                ensure_ascii=False,
+            )
+        handle.write("\n]\n")
 
 
 def write_sqlite(path: Path, columns, rows) -> None:
@@ -147,18 +163,16 @@ def write_sqlite(path: Path, columns, rows) -> None:
     conn = sqlite3.connect(path)
     try:
         conn.execute(f"CREATE TABLE {app.quote_ident('查询结果')} ({column_sql})")
-        if rows:
-            placeholders = ", ".join(["?"] * len(names))
-            payload = []
-            for row in rows:
-                values = list(row)
-                if len(values) < len(names):
-                    values.extend([None] * (len(names) - len(values)))
-                payload.append(values[: len(names)])
-            conn.executemany(
-                f"INSERT INTO {app.quote_ident('查询结果')} ({column_sql}) VALUES ({placeholders})",
-                payload,
-            )
+        placeholders = ", ".join(["?"] * len(names))
+        batch: list[list] = []
+        sql = f"INSERT INTO {app.quote_ident('查询结果')} ({column_sql}) VALUES ({placeholders})"
+        for row in rows:
+            batch.append(_fit_row(row, len(names)))
+            if len(batch) >= 1000:
+                conn.executemany(sql, batch)
+                batch.clear()
+        if batch:
+            conn.executemany(sql, batch)
         conn.commit()
     finally:
         conn.close()
@@ -167,15 +181,13 @@ def write_sqlite(path: Path, columns, rows) -> None:
 def write_excel(path: Path, columns, rows) -> None:
     from openpyxl import Workbook
 
-    book = Workbook()
-    sheet = book.active
-    sheet.title = "查询结果"
-    sheet.append([_excel_cell(column) for column in columns])
+    book = Workbook(write_only=True)
+    sheet = book.create_sheet("查询结果")
+    names = [str(column) for column in columns]
+    sheet.append([_excel_cell(column) for column in names])
+    width = len(names)
     for row in rows:
-        values = list(row)
-        if len(values) < len(columns):
-            values.extend([None] * (len(columns) - len(values)))
-        sheet.append([_excel_cell(value) for value in values[: len(columns)]])
+        sheet.append([_excel_cell(value) for value in _fit_row(row, width)])
     book.save(path)
 
 
@@ -215,6 +227,25 @@ def bind(window):
     window.dom.document.events.drop += DOMEventHandler(lambda event: on_drop(window, event), True, True)
 
 
+def clear_page_cache() -> None:
+    """WebView2 会把固定地址的页面留在缓存里，改过的页面因此打不开。只删缓存，保留本地记录。"""
+    root = app.DATA_DIR / "webview"
+    if not root.exists():
+        return
+    cache_names = {
+        "Cache",
+        "Code Cache",
+        "GPUCache",
+        "DawnGraphiteCache",
+        "DawnWebGPUCache",
+        "ShaderCache",
+        "GrShaderCache",
+    }
+    targets = [path for path in root.rglob("*") if path.is_dir() and path.name in cache_names]
+    for path in targets:
+        shutil.rmtree(path, ignore_errors=True)
+
+
 def main():
     window = webview.create_window(
         "SQL 查 Excel",
@@ -227,6 +258,7 @@ def main():
         background_color="#E7E1D6",
     )
     app.DATA_DIR.mkdir(parents=True, exist_ok=True)
+    clear_page_cache()
     webview.start(bind, (window,), private_mode=False, storage_path=str(app.DATA_DIR / "webview"))
 
 
